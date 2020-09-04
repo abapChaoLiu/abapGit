@@ -48,7 +48,7 @@ ENDCLASS.
 
 
 
-CLASS ZCL_ABAPGIT_HTTP IMPLEMENTATION.
+CLASS zcl_abapgit_http IMPLEMENTATION.
 
 
   METHOD acquire_login_details.
@@ -130,9 +130,16 @@ CLASS ZCL_ABAPGIT_HTTP IMPLEMENTATION.
           li_client              TYPE REF TO if_http_client,
           lo_proxy_configuration TYPE REF TO zcl_abapgit_proxy_config,
           lv_text                TYPE string.
-
+    DATA: li_oa2c_client          TYPE REF TO if_oauth2_client,
+          lx_oa2c_exception       TYPE REF TO cx_oa2c,
+          lv_oa2c_profile         TYPE oa2c_profile,
+          lo_oauth2_configuration TYPE REF TO zcl_abapgit_oauth2_config,
+          lv_oauth2_enabled       TYPE abap_bool.
 
     CREATE OBJECT lo_proxy_configuration.
+    CREATE OBJECT lo_oauth2_configuration.
+
+    lv_oauth2_enabled = lo_oauth2_configuration->is_oauth2_enabled( ).
 
     li_client = zcl_abapgit_exit=>get_instance( )->create_http_client( iv_url ).
 
@@ -196,26 +203,47 @@ CLASS ZCL_ABAPGIT_HTTP IMPLEMENTATION.
     " Disable internal auth dialog (due to its unclarity)
     li_client->propertytype_logon_popup = if_http_client=>co_disabled.
 
-    zcl_abapgit_login_manager=>load(
-      iv_uri    = iv_url
-      ii_client = li_client ).
+    IF lv_oauth2_enabled = abap_true.
+      lv_oa2c_profile = 'ZGITHUB_PROFILE'.
+      TRY.
+          li_oa2c_client = cl_oauth2_client=>create( lv_oa2c_profile ).
+        CATCH cx_oa2c INTO lx_oa2c_exception.
+          zcx_abapgit_exception=>raise( 'OAUTH2:' && lx_oa2c_exception->get_text( ) ).
+      ENDTRY.
+
+      TRY.
+          li_oa2c_client->set_token( io_http_client = li_client
+                                  i_param_kind   = 'H'       ).
+        CATCH cx_oa2c INTO lx_oa2c_exception.
+          zcx_abapgit_exception=>raise( 'OAUTH2:' && lx_oa2c_exception->get_text( ) ).
+      ENDTRY.
+    ELSE. "lv_oauth2_enabled = abap_false
+      zcl_abapgit_login_manager=>load(
+        iv_uri    = iv_url
+        ii_client = li_client ).
+    ENDIF.
 
     zcl_abapgit_exit=>get_instance( )->http_client(
       iv_url    = iv_url
       ii_client = li_client ).
 
     ro_client->send_receive( ).
-    IF check_auth_requested( li_client ) = abap_true.
-      lv_scheme = acquire_login_details( ii_client = li_client
-                                         io_client = ro_client
-                                         iv_url    = iv_url ).
-      ro_client->send_receive( ).
-    ENDIF.
-    ro_client->check_http_200( ).
 
-    IF lv_scheme <> c_scheme-digest.
-      zcl_abapgit_login_manager=>save( iv_uri    = iv_url
-                                       ii_client = li_client ).
+    IF lv_oauth2_enabled = abap_true.
+        ro_client->check_http_200( ).
+    ELSE. "lv_oauth2_enabled = abap_false
+      IF check_auth_requested( li_client ) = abap_true.
+        lv_scheme = acquire_login_details( ii_client = li_client
+                                           io_client = ro_client
+                                           iv_url    = iv_url ).
+        ro_client->send_receive( ).
+      ENDIF.
+      ro_client->check_http_200( ).
+
+      IF lv_scheme <> c_scheme-digest.
+        zcl_abapgit_login_manager=>save( iv_uri    = iv_url
+                                         ii_client = li_client ).
+      ENDIF.
     ENDIF.
 
   ENDMETHOD.
